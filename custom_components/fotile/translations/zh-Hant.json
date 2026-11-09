@@ -1,0 +1,75 @@
+{
+  "application_credentials": {
+    "description": "請在[方太開放平台控制台]({console_url})中建立應用以取得 Client ID。\n\n註冊應用時請使用以下設定：\n- 用戶端類型：公開用戶端 / 原生應用（public / native app）\n- 授權模式：authorization_code + PKCE（S256）\n- 回呼位址：`https://my.home-assistant.io/redirect/oauth`"
+  },
+  "config": {
+    "step": {
+      "oauth_discovery": {
+        "title": "連線方太",
+        "description": "即將跳轉至方太官網完成登入與授權。"
+      },
+      "reauth_confirm": {
+        "title": "重新認證",
+        "description": "方太授權已過期或已被撤銷，請點擊**提交**重新登入。"
+      }
+    },
+    "abort": {
+      "already_configured": "該方太帳號已設定。",
+      "reauth_successful": "重新認證成功。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "description": "調整輪詢間隔以及要接入的裝置。\n\n裝置清單留空表示接入全部裝置。",
+        "data": {
+          "scan_interval": "資料更新間隔（秒）",
+          "devices_filter": "要接入的裝置"
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "auth_failed": {
+      "message": "方太授權已失效，請重新授權。"
+    },
+    "device_offline": {
+      "message": "裝置離線，請檢查方太 App 中的裝置狀態。"
+    },
+    "device_not_exist": {
+      "message": "裝置不存在或已解除綁定。"
+    },
+    "command_not_supported": {
+      "message": "該裝置不支援此操作。"
+    },
+    "cannot_connect": {
+      "message": "無法連線方太雲端，請稍後重試。"
+    },
+    "command_failed": {
+      "message": "方太雲端傳回錯誤：{description}"
+    },
+    "invalid_value": {
+      "message": "參數無效：{value}"
+    }
+  },
+  "entity": {
+    "fan": {
+      "range_hood": {
+        "name": "油煙機"
+      }
+    },
+    "light": {
+      "hood_light": {
+        "name": "照明燈"
+      }
+    },
+    "binary_sensor": {
+      "left_stove": {
+        "name": "左爐"
+      },
+      "right_stove": {
+        "name": "右爐"
+      }
+    }
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "application_credentials": {
+    "description": "Create an application in the [Fotile Open Platform console]({console_url}) to obtain a client ID.\n\nWhen registering the application, use these settings:\n- Client type: public / native app\n- Grant type: authorization_code with PKCE (S256)\n- Redirect URI: `https://my.home-assistant.io/redirect/oauth`"
+  },
+  "config": {
+    "step": {
+      "oauth_discovery": {
+        "title": "Connect to Fotile",
+        "description": "You will be redirected to the Fotile website to sign in and authorize Home Assistant."
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate",
+        "description": "The Fotile authorization has expired or was revoked. Select **Submit** to sign in again."
+      }
+    },
+    "abort": {
+      "already_configured": "This Fotile account is already configured.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "description": "Adjust the polling interval and which devices to expose.\n\nLeave the device list empty to include all devices.",
+        "data": {
+          "scan_interval": "Update interval (seconds)",
+          "devices_filter": "Devices"
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "auth_failed": {
+      "message": "Fotile authorization has expired. Please re-authenticate."
+    },
+    "device_offline": {
+      "message": "The device is offline. Check its status in the Fotile app."
+    },
+    "device_not_exist": {
+      "message": "The device no longer exists or was unbound."
+    },
+    "command_not_supported": {
+      "message": "This device does not support the requested operation."
+    },
+    "cannot_connect": {
+      "message": "Unable to reach the Fotile cloud. Try again later."
+    },
+    "command_failed": {
+      "message": "Fotile cloud returned an error: {description}"
+    },
+    "invalid_value": {
+      "message": "Invalid value: {value}"
+    }
+  },
+  "entity": {
+    "fan": {
+      "range_hood": {
+        "name": "Range Hood"
+      }
+    },
+    "light": {
+      "hood_light": {
+        "name": "Light"
+      }
+    },
+    "binary_sensor": {
+      "left_stove": {
+        "name": "Left Burner"
+      },
+      "right_stove": {
+        "name": "Right Burner"
+      }
+    }
+  }
+}

@@ -1,1 +1,264 @@
-"# ha_fotile_home" 
+# Fotile - Home Assistant Integration
+
+Official Home Assistant integration for Fotile smart kitchen appliances. Brings
+Fotile range hoods, stoves and more into Home Assistant for unified control and
+automation.
+
+> English | [中文](README.zh-CN.md)
+
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=fotilefiks&repository=ha_fotile_home&category=integration)
+
+---
+
+## Supported Devices
+
+| Device | HA Entity | Features |
+|--------|-----------|----------|
+| Range hood | Fan | Master power switch, 3 fan speeds (low / auto / high) |
+| Range hood | Light | Light switch |
+| Stove | Binary Sensor ×2 | Left / right burner on-state (**read-only**) |
+
+> **About stoves**: the stove fields Fotile exposes to the cloud-cloud protocol
+> (`LeftStoveState` / `RightStoveState`) have read (`R`) permission only, so this
+> integration reports their state but **does not control the stove**.
+>
+> More categories (dishwasher, water heater, water purifier, sterilizer, etc.)
+> will be added once Fotile publishes their thing models. The removed dishwasher
+> and steamer-oven code is kept in git history to be restored when the models
+> become available.
+
+### How device types are identified
+
+**The `devType` field is not used** -- Fotile's cloud-cloud spec provides no
+`devType` lookup table. Device category is decided by the `services[].sid`
+capability declarations returned by `DeviceDiscovery`; see
+`const.DEVICE_KIND_BY_SID`:
+
+| Category | Matches any of these sids |
+|----------|---------------------------|
+| Range hood | `PowerSwitch` / `FanLevel` / `Light` |
+| Stove | `LeftStoveState` / `RightStoveState` |
+
+One device may match multiple categories (e.g. an integrated cooker-hood), in
+which case all matching platform entities are created. Each entity also
+double-checks that the device actually declares the corresponding sid, avoiding
+always-unavailable light entities for hoods without a light.
+
+---
+
+## Installation
+
+### Method 1: HACS (recommended)
+
+1. Home Assistant → HACS → Integrations
+2. Search for **Fotile**
+3. Click **Install**
+4. Restart Home Assistant
+
+### Method 2: Manual
+
+1. Download this repository
+2. Copy the `custom_components/fotile` folder into your Home Assistant
+   `custom_components` directory
+3. Restart Home Assistant
+
+---
+
+## Configuration
+
+1. Home Assistant → Settings → Devices & Services → Add Integration
+2. Search for **Fotile**
+3. Your browser redirects to the **Fotile website** -- log in with your phone
+   number and SMS code, then authorize
+4. You are returned to Home Assistant, which auto-discovers and adds all Fotile
+   devices bound to your account
+
+> **Security**: this integration uses OAuth 2.0 Authorization Code + PKCE. Login
+> and SMS-code entry happen entirely on Fotile's own page. **Home Assistant never
+> sees or stores your phone number, password, or SMS code** -- it only holds an
+> access token that you can revoke at any time on Fotile's side.
+
+### Application credentials
+
+The official Fotile release has credentials built in -- no action needed.
+
+If you run a self-deployed development build, add your own Client ID under
+**Settings → Devices & Services → ⋮ (top-right menu) → Application credentials**:
+
+| Field | Value |
+|-------|-------|
+| Client type | Public client / native app |
+| Auth mode | authorization_code + PKCE (S256) |
+| Redirect URI | `https://my.home-assistant.io/redirect/oauth` |
+
+> The redirect URI must match **exactly character-by-character**. OAuth 2.1
+> requires exact string matching; prefix or partial matches are rejected.
+
+### Options
+
+After installation, go to **Devices & Services → Fotile → Configure**:
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| Update interval | Device status refresh interval (seconds) | 30 (range 10–300) |
+| Devices | Only expose the selected devices; leave all unchecked to include every device | All devices |
+
+---
+
+## Requirements
+
+- Home Assistant Core ≥ 2024.11.0
+- A Fotile account with devices bound
+- Devices connected via WiFi and online in the Fotile app
+- Internet access (this integration uses cloud polling)
+
+> The integration relies on a re-auth helper introduced in Home Assistant 2024.11;
+> it will not work on older versions.
+
+---
+
+## Cloud Protocol
+
+This integration implements the Fotile cloud-cloud protocol per
+*Fotile Cloud-Cloud Integration Developer Device Specification V1.4*.
+
+### Single endpoint + namespace dispatch (not RESTful)
+
+All device APIs POST to a single URL; the function is selected by
+`header.namespace` in the request body:
+
+```
+POST https://api-test.fotile.com/open-cloud/v1/api
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "header": {
+    "namespace": "DeviceDiscovery",
+    "thirdPartyId": "<CorpId>",
+    "granteeId": "<CorpId>",
+    "thirdPartyUserId": "<userId>",
+    "messageId": "<uuid>",
+    "timestamp": 1793356406787
+  },
+  "payload": { }
+}
+```
+
+Both `thirdPartyId` and `granteeId` are set to the **same** Fotile-issued CorpId,
+as explicitly required by the spec (section 2.1.4.1 describes `granteeId` as
+"third-party vendor identifier (CorpId issued in the email)").
+
+| namespace | Purpose | Used in |
+|-----------|---------|---------|
+| `AcceptGrant` | Account authorization (**required first**) | `config_flow.py`, `__init__.py` |
+| `DeviceDiscovery` | Device list | `coordinator.py` |
+| `DeviceSnapshot` | Device status | `coordinator.py` |
+| `DeviceCommand` | Device control (write property) | entity platforms |
+
+### AcceptGrant is a prerequisite
+
+Fotile checks the `(userId, granteeId)` grant relationship for every namespace
+except `AcceptGrant`; without it the server returns `10002 UNAUTHORIZED`.
+
+The integration calls it in two places:
+1. `config_flow.py` -- right after authorization, using the returned
+   `thirdPartyUserId` as the `unique_id` (prevents duplicate entries for the same
+   account) and persisting it.
+2. `__init__.py` -- on integration load (reusing the persisted value when present
+   to avoid duplicate requests).
+
+The endpoint is idempotent (the server updates an existing relationship), so
+repeated calls are safe.
+
+### Control is "write property", not a verb command
+
+```json
+{
+  "namespace": "DeviceCommand",
+  "payload": {
+    "command": {
+      "timestamp": "20261030T103600Z",
+      "thirdPartyDevId": "dev-hood-001",
+      "prodId": "000b",
+      "sid": "FanLevel",
+      "data": { "FanLevel": 3 }
+    }
+  }
+}
+```
+
+There is no command verb name -- only `sid` (service identifier) + `data`
+(property key/value). Note that `command.timestamp` uses `yyyyMMddTHHmmssZ` (no
+millis), which **differs** from the snapshot `services[].ts` format
+`yyyyMMddTHHmmssSSSZ` (with millis).
+
+### Error codes are in the body, not the HTTP status
+
+Business errors are expressed through `payload.code`. Although the spec lists
+corresponding HTTP status codes, the server's global exception handler does not
+set the HTTP status, so responses are effectively **always 200**.
+
+Therefore this integration **always parses `payload.code`**. Credential-related
+codes trigger re-auth:
+`10002` `100021` `100022` `10003` `10004` `10008` `10000` `100001`.
+Device errors (`10009` device not found / `10010` operation not supported /
+`10011` device offline) raise `FotileBusinessError` and do not affect token
+state.
+
+### Status data is two-level nested
+
+```json
+{ "devices": [{ "thirdPartyDevId": "...", "status": "online",
+    "services": [{ "ts": "...", "sid": "PowerSwitch", "data": { "PowerSwitch": 1 } }] }] }
+```
+
+`flatten_service_data()` in `core/mapping.py` flattens this to
+`{"PowerSwitch.PowerSwitch": 1}`, using `sid` as a prefix to prevent same-named
+attributes across services from overwriting each other. `const.STATUS_FIELD_MAP`
+then maps these to internal field names consumed by entities.
+
+### Online status comes only from the snapshot
+
+`DeviceDiscovery` (the device list) **does not provide online status**; `online`
+is backfilled from the `DeviceSnapshot` `status` field (`online`/`offline`).
+
+Accordingly, the coordinator must send one snapshot request per device per cycle
+(the spec requires `thirdPartyDevIds` to carry a single id); requests are made
+concurrently with `asyncio.gather`. The device list has a 5-minute cache and is
+not re-fetched every cycle.
+
+### Why event push is not implemented
+
+Spec section 2.4 defines Fotile actively pushing device events
+(`DeviceStatusChanged`, etc.) to third parties, but requires the third party to
+provide a **publicly reachable callback URL**. Home Assistant is typically
+deployed locally with no public ingress, so it cannot receive pushes; polling is
+used instead (`"iot_class": "cloud_polling"` in `manifest.json`).
+
+---
+
+## Issues
+
+Please file GitHub issues and include:
+1. Home Assistant version
+2. Device model
+3. Logs (enable debug logging in `configuration.yaml`):
+
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.fotile: debug
+```
+
+> Troubleshooting tip: run `python tools/debug_auth.py devices --token <AT>`
+> first; the three-step output directly pinpoints whether the issue is in auth,
+> the device list, or status parsing.
+
+---
+
+## License
+
+Apache License 2.0
