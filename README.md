@@ -15,8 +15,7 @@ automation.
 
 | Device | HA Entity | Features |
 |--------|-----------|----------|
-| Range hood | Fan | Master power switch, 3 fan speeds (low / auto / high) |
-| Range hood | Light | Light switch |
+| Range hood | Fan / Light | Master power switch, 3 fan speeds (low / auto / high), light switch |
 | Stove | Binary Sensor ×2 | Left / right burner on-state (**read-only**) |
 
 > **About stoves**: the stove fields Fotile exposes to the cloud-cloud protocol
@@ -120,47 +119,36 @@ After installation, go to **Devices & Services → Fotile → Configure**:
 
 ## Cloud Protocol
 
-This integration implements the Fotile cloud-cloud protocol per
-*Fotile Cloud-Cloud Integration Developer Device Specification V1.4*.
+This integration **does not call Fotile's enterprise-side API directly**. It only
+talks to the Home Assistant facade (`/ha/v1`) provided by Fotile. CorpId, the
+cloud-cloud envelope (`header` / `namespace`) and the enterprise-side protocol
+are owned by the server; the client is unaware of them and carries no vendor id.
 
-### Single endpoint + namespace dispatch (not RESTful)
+### Flat REST
 
-All device APIs POST to a single URL; the function is selected by
-`header.namespace` in the request body:
+Every endpoint is plain flat REST, authenticated with
+`Authorization: Bearer <access_token>`:
 
 ```
-POST https://api-test.fotile.com/open-cloud/v1/api
+POST https://api.fotile.com/open-cloud/ha/v1/devices
 Authorization: Bearer <access_token>
 Content-Type: application/json
 
-{
-  "header": {
-    "namespace": "DeviceDiscovery",
-    "thirdPartyId": "<CorpId>",
-    "granteeId": "<CorpId>",
-    "thirdPartyUserId": "<userId>",
-    "messageId": "<uuid>",
-    "timestamp": 1793356406787
-  },
-  "payload": { }
-}
+{ }
 ```
 
-Both `thirdPartyId` and `granteeId` are set to the **same** Fotile-issued CorpId,
-as explicitly required by the spec (section 2.1.4.1 describes `granteeId` as
-"third-party vendor identifier (CorpId issued in the email)").
-
-| namespace | Purpose | Used in |
-|-----------|---------|---------|
-| `AcceptGrant` | Account authorization (**required first**) | `config_flow.py`, `__init__.py` |
-| `DeviceDiscovery` | Device list | `coordinator.py` |
-| `DeviceSnapshot` | Device status | `coordinator.py` |
-| `DeviceCommand` | Device control (write property) | entity platforms |
+| Endpoint | Purpose | Used in |
+|----------|---------|---------|
+| `POST /accept-grant` | Account authorization (**required first**) | `config_flow.py`, `__init__.py` |
+| `POST /devices` | Device list | `coordinator.py` |
+| `POST /devices/{id}/snapshot` | Device status | `coordinator.py` |
+| `POST /devices/{id}/command` | Device control (write property) | entity platforms |
+| `POST /devices/{id}/subscribe` | Device subscription | debug only |
 
 ### AcceptGrant is a prerequisite
 
-Fotile checks the `(userId, granteeId)` grant relationship for every namespace
-except `AcceptGrant`; without it the server returns `10002 UNAUTHORIZED`.
+The facade checks, for every endpoint except `/accept-grant`, that the user has
+granted access to Home Assistant; without it the server returns **HTTP 401**.
 
 The integration calls it in two places:
 1. `config_flow.py` -- right after authorization, using the returned
@@ -176,36 +164,26 @@ repeated calls are safe.
 
 ```json
 {
-  "namespace": "DeviceCommand",
-  "payload": {
-    "command": {
-      "timestamp": "20261030T103600Z",
-      "thirdPartyDevId": "dev-hood-001",
-      "prodId": "000b",
-      "sid": "FanLevel",
-      "data": { "FanLevel": 3 }
-    }
-  }
+  "sid": "FanLevel",
+  "data": { "FanLevel": 3 },
+  "prodId": "000b"
 }
 ```
 
 There is no command verb name -- only `sid` (service identifier) + `data`
-(property key/value). Note that `command.timestamp` uses `yyyyMMddTHHmmssZ` (no
-millis), which **differs** from the snapshot `services[].ts` format
-`yyyyMMddTHHmmssSSSZ` (with millis).
+(property key/value). `prodId` is optional and improves server-side matching.
 
-### Error codes are in the body, not the HTTP status
+### Errors are mapped onto HTTP status codes
 
-Business errors are expressed through `payload.code`. Although the spec lists
-corresponding HTTP status codes, the server's global exception handler does not
-set the HTTP status, so responses are effectively **always 200**.
+The facade maps error classes onto HTTP statuses and keeps the body flat
+(`{"code": ..., "description": ...}`):
 
-Therefore this integration **always parses `payload.code`**. Credential-related
-codes trigger re-auth:
-`10002` `100021` `100022` `10003` `10004` `10008` `10000` `100001`.
-Device errors (`10009` device not found / `10010` operation not supported /
-`10011` device offline) raise `FotileBusinessError` and do not affect token
-state.
+| HTTP | Meaning | Client behaviour |
+|------|---------|------------------|
+| 200 | Success | Parsed normally |
+| 401 / 403 | Invalid token or user not granted | Trigger HA re-auth |
+| 4xx | Business error (`10009` not found / `10010` unsupported / `10011` offline) | Raise `FotileBusinessError`, token state untouched |
+| 5xx | Server failure | Raise `FotileConnectionError`, retried with backoff |
 
 ### Status data is two-level nested
 
@@ -253,9 +231,10 @@ logger:
     custom_components.fotile: debug
 ```
 
-> Troubleshooting tip: run `python tools/debug_auth.py devices --token <AT>`
-> first; the three-step output directly pinpoints whether the issue is in auth,
-> the device list, or status parsing.
+> Troubleshooting tip: first check that `const.HA_API_BASE_URL` is reachable and
+> `client_id` is correct, then enable debug logging for
+> `custom_components.fotile` to locate whether the issue is in auth, the device
+> list, or status parsing.
 
 ---
 

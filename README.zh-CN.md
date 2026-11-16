@@ -13,8 +13,7 @@
 
 | 设备类型 | HA 实体 | 支持功能 |
 |---------|---------|---------|
-| 油烟机 | Fan | 总电源开关、三档风速（弱/自动/强） |
-| 油烟机 | Light | 照明灯开关 |
+| 油烟机 | Fan / Light | 总电源开关、三档风速（弱/自动/强）、照明灯开关 |
 | 灶具 | Binary Sensor ×2 | 左灶、右灶开启状态（**只读**） |
 
 > **关于灶具**：方太开放给云云对接的灶具字段（`LeftStoveState` / `RightStoveState`）
@@ -110,46 +109,34 @@
 
 ## 云端协议说明
 
-本集成对接方太云云互联协议，依据
-《方太云云互联-方太集成开发者设备规范 V1.4(云云)》实现。
+本集成**不直连方太企业侧接口**，只与方太提供的 Home Assistant 接入门面
+（`/ha/v1`）通信。CorpId、云云信封（`header` / `namespace`）与企业侧接口
+协议全部由服务端持有，客户端不感知，也不携带任何厂家标识。
 
-### 单端点 + namespace 分发（非 RESTful）
+### 扁平 REST 接口
 
-所有设备接口都 POST 到同一个地址，靠请求体内的 `header.namespace` 区分功能：
+所有接口都是普通的扁平 REST，鉴权统一用 `Authorization: Bearer <access_token>`：
 
 ```
-POST https://api-test.fotile.com/open-cloud/v1/api
+POST https://api.fotile.com/open-cloud/ha/v1/devices
 Authorization: Bearer <access_token>
 Content-Type: application/json
 
-{
-  "header": {
-    "namespace": "DeviceDiscovery",
-    "thirdPartyId": "<CorpId>",
-    "granteeId": "<CorpId>",
-    "thirdPartyUserId": "<userId>",
-    "messageId": "<uuid>",
-    "timestamp": 1793356406787
-  },
-  "payload": { }
-}
+{ }
 ```
 
-`thirdPartyId` 与 `granteeId` **都填方太颁发的 CorpId**（同值），
-这是方太明确要求的，规范 2.1.4.1 中 `granteeId` 的描述即为
-「第三方厂家标识(邮件中颁发的 CorpId)」。
-
-| namespace | 用途 | 本集成使用位置 |
-|-----------|------|---------------|
-| `AcceptGrant` | 帐号授权（**前置必需**） | `config_flow.py`、`__init__.py` |
-| `DeviceDiscovery` | 获取设备列表 | `coordinator.py` |
-| `DeviceSnapshot` | 获取设备状态 | `coordinator.py` |
-| `DeviceCommand` | 设备控制（写属性） | 各实体平台 |
+| 端点 | 用途 | 本集成使用位置 |
+|------|------|---------------|
+| `POST /accept-grant` | 帐号授权（**前置必需**） | `config_flow.py`、`__init__.py` |
+| `POST /devices` | 获取设备列表 | `coordinator.py` |
+| `POST /devices/{id}/snapshot` | 获取设备状态 | `coordinator.py` |
+| `POST /devices/{id}/command` | 设备控制（写属性） | 各实体平台 |
+| `POST /devices/{id}/subscribe` | 设备订阅 | 仅联调验证 |
 
 ### AcceptGrant 是前置条件
 
-方太侧对 `AcceptGrant` 之外的所有 namespace 都会校验
-`(userId, granteeId)` 是否已建立授权关系，未建立则返回 `10002 UNAUTHORIZED`。
+门面对 `/accept-grant` 之外的所有端点都会校验用户是否已授权给
+Home Assistant，未建立则返回 **HTTP 401**。
 
 集成在两处调用它：
 1. `config_flow.py`——授权成功后立即调用，用返回的 `thirdPartyUserId` 作
@@ -162,32 +149,26 @@ Content-Type: application/json
 
 ```json
 {
-  "namespace": "DeviceCommand",
-  "payload": {
-    "command": {
-      "timestamp": "20261030T103600Z",
-      "thirdPartyDevId": "dev-hood-001",
-      "prodId": "000b",
-      "sid": "FanLevel",
-      "data": { "FanLevel": 3 }
-    }
-  }
+  "sid": "FanLevel",
+  "data": { "FanLevel": 3 },
+  "prodId": "000b"
 }
 ```
 
 请求体里没有 `command` 动词名，只有 `sid`（服务标识）+ `data`（属性键值）。
-注意 `command.timestamp` 格式为 `yyyyMMddTHHmmssZ`（无毫秒），
-与快照里 `services[].ts` 的 `yyyyMMddTHHmmssSSSZ`（带毫秒）**不同**。
+`prodId` 可选，用于提高服务端匹配精度。
 
-### 错误码走 body，不靠 HTTP 状态码
+### 错误码随 HTTP 状态码返回
 
-方太的业务错误通过 `payload.code` 表达。规范虽列出了对应的 HTTP 状态码，
-但服务端的全局异常处理未设置 HTTP status，实现上很可能**恒返回 200**。
+接入门面（`/ha/v1`）已把错误分类映射到 HTTP 状态码，响应体保持扁平
+`{"code": ..., "description": ...}`：
 
-因此本集成**一律解析 `payload.code`**，遇以下凭据类错误码主动触发重新授权：
-`10002` `100021` `100022` `10003` `10004` `10008` `10000` `100001`。
-设备类错误（`10009` 设备不存在 / `10010` 不支持该操作 / `10011` 设备离线）
-则抛 `FotileBusinessError`，不影响令牌状态。
+| HTTP | 含义 | 集成行为 |
+|------|------|----------|
+| 200 | 成功 | 正常解析 |
+| 401 / 403 | 令牌失效或用户未授权 | 触发 HA 重新授权 |
+| 4xx | 业务错误（`10009` 设备不存在 / `10010` 不支持该操作 / `10011` 设备离线） | 抛 `FotileBusinessError`，不影响令牌状态 |
+| 5xx | 服务端异常 | 抛 `FotileConnectionError`，按网络故障退避重试 |
 
 ### 状态数据是两层嵌套
 
@@ -232,8 +213,8 @@ logger:
     custom_components.fotile: debug
 ```
 
-> 排查建议：先跑 `python tools/debug_auth.py devices --token <AT>`，
-> 三步输出能直接定位问题在鉴权、设备列表还是状态解析环节。
+> 排查建议：先确认 `const.HA_API_BASE_URL` 可达、`client_id` 正确，
+> 再开启 `custom_components.fotile` 的 debug 日志定位是鉴权、设备列表还是状态解析环节。
 
 ---
 

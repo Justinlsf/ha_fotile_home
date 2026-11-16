@@ -4,97 +4,28 @@ from __future__ import annotations
 from typing import Any
 
 from ..const import (
-    AUTH_ERROR_CODES,
-    CODE_SUCCESS,
-    DEVICE_STATUS_ONLINE,
     FIELD_MAP_DEVICE_INFO,
     FIELD_MAP_DEVICE_TOP,
     KEY_DATA,
     KEY_DEVICES,
-    KEY_DESCRIPTION,
     KEY_SERVICE_ID,
     KEY_SERVICE_TYPE,
     KEY_SERVICES,
     KEY_STATUS,
     KEY_TIMESTAMP,
-    MISSING_AUTH_CODES,
-    RESPONSE_KEY_CODE,
-    RESPONSE_KEY_HEADER,
-    RESPONSE_KEY_PAYLOAD,
     STATUS_FIELD_MAP,
 )
 
 __all__ = [
-    "FotileProtocolError",
     "extract_device_list",
     "extract_service_ids",
     "flatten_service_data",
-    "is_auth_error_code",
     "map_device_fields",
     "map_status_fields",
-    "parse_envelope",
-    "payload_code",
     "to_bool",
     "to_float",
     "to_int",
 ]
-
-
-class FotileProtocolError(Exception):
-    """Response does not match the envelope contract."""
-
-
-def parse_envelope(response: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Split a response into (header, payload). Missing side -> {}."""
-    if not isinstance(response, dict):
-        raise FotileProtocolError(
-            f"Response is not a JSON object, got {type(response).__name__}"
-        )
-
-    payload = response.get(RESPONSE_KEY_PAYLOAD)
-    if payload is None:
-        raise FotileProtocolError("Response missing payload field")
-    if not isinstance(payload, dict):
-        raise FotileProtocolError(
-            f"payload is not a JSON object, got {type(payload).__name__}"
-        )
-
-    header = response.get(RESPONSE_KEY_HEADER)
-    if not isinstance(header, dict):
-        header = {}
-
-    return header, payload
-
-
-def payload_code(payload: dict[str, Any]) -> int | None:
-    """Extract the business code; None if missing or non-integer."""
-    code = payload.get(RESPONSE_KEY_CODE)
-    if isinstance(code, bool):  # bool is a subclass of int
-        return None
-    if isinstance(code, int):
-        return code
-    if isinstance(code, str):
-        try:
-            return int(code)
-        except ValueError:
-            return None
-    return None
-
-
-def is_success(payload: dict[str, Any]) -> bool:
-    return payload_code(payload) == CODE_SUCCESS
-
-
-def error_description(payload: dict[str, Any]) -> str:
-    desc = payload.get(KEY_DESCRIPTION)
-    return str(desc) if desc is not None else ""
-
-
-def is_auth_error_code(code: int | None) -> bool:
-    """True if the code indicates invalid credentials (trigger HA reauth)."""
-    if code is None:
-        return False
-    return code in AUTH_ERROR_CODES or code in MISSING_AUTH_CODES
 
 
 def extract_device_list(payload: dict[str, Any]) -> list[Any]:
@@ -203,9 +134,7 @@ def map_status_fields(snapshot_device: Any) -> dict[str, Any]:
         return result
 
     status = snapshot_device.get(KEY_STATUS)
-    result["online"] = (
-        isinstance(status, str) and status.strip().lower() == DEVICE_STATUS_ONLINE
-    )
+    result["online"] = isinstance(status, str) and status.strip().lower() == "online"
 
     flat = flatten_service_data(snapshot_device.get(KEY_SERVICES))
     result["_flat"] = flat

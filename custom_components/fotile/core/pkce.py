@@ -5,6 +5,8 @@ import base64
 import hashlib
 import secrets
 
+from ..const import PKCE_CODE_VERIFIER_LENGTH
+
 __all__ = [
     "CODE_VERIFIER_MAX_LENGTH",
     "CODE_VERIFIER_MIN_LENGTH",
@@ -14,7 +16,7 @@ __all__ = [
 
 CODE_VERIFIER_MIN_LENGTH = 43
 CODE_VERIFIER_MAX_LENGTH = 128
-DEFAULT_CODE_VERIFIER_LENGTH = 128
+DEFAULT_CODE_VERIFIER_LENGTH = PKCE_CODE_VERIFIER_LENGTH
 
 
 def generate_code_verifier(length: int = DEFAULT_CODE_VERIFIER_LENGTH) -> str:

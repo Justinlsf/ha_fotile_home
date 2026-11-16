@@ -1,30 +1,23 @@
-"""Fotile cloud API client (single endpoint, namespace dispatch)."""
+"""Fotile API client (flat REST against the HA facade)."""
 from __future__ import annotations
 
+import json
 import logging
 import time
-import uuid
 from typing import Any
 
 import aiohttp
 
 from ..const import (
-    API_BASE_URL,
-    API_PATH,
     CODE_DEVICE_OFFLINE,
-    CORP_ID,
     FAN_LEVEL_HIGH,
     FAN_LEVEL_STANDBY,
-    GRANT_TYPE_OAUTH2_AUTH_CODE,
-    KEY_COMMAND,
+    HA_API_BASE_URL,
     KEY_DATA,
+    KEY_DESCRIPTION,
     KEY_DEVICES,
     KEY_SERVICE_ID,
-    KEY_THIRD_PARTY_DEV_IDS,
-    NS_ACCEPT_GRANT,
-    NS_DEVICE_COMMAND,
-    NS_DEVICE_DISCOVERY,
-    NS_DEVICE_SNAPSHOT,
+    RESPONSE_KEY_CODE,
     SID_FAN_LEVEL,
     SID_LIGHT,
     SID_POWER_SWITCH,
@@ -39,20 +32,15 @@ from .authbase import (
     StaticTokenAuth,
 )
 from .mapping import (
-    FotileProtocolError,
-    error_description,
     find_snapshot_device,
-    is_auth_error_code,
-    is_success,
     map_device_fields,
     map_status_fields,
-    parse_envelope,
-    payload_code,
     to_bool,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
+# Re-exported so callers keep importing from this module.
 __all__ = [
     "AbstractAuth",
     "FotileApiError",
@@ -71,7 +59,7 @@ class FotileConnectionError(FotileApiError):
 
 
 class FotileBusinessError(FotileApiError):
-    """Business error returned by Fotile (payload.code != 0)."""
+    """Business error returned by the facade (HTTP 4xx)."""
 
     def __init__(self, code: int | None, description: str) -> None:
         self.code = code
@@ -93,22 +81,24 @@ def is_ha_config_entry_exception(err: BaseException) -> bool:
 
 
 class FotileClient:
-    """Thin client for the Fotile cloud-cloud API."""
+    """Thin client for the Fotile HA facade.
+
+    Only flat REST is spoken here: CorpId, the cloud-cloud envelope and the
+    enterprise-side protocol are owned by the server.
+    """
 
     def __init__(
         self,
         auth: AbstractAuth,
         session: aiohttp.ClientSession | None = None,
-        base_url: str = API_BASE_URL,
-        corp_id: str = CORP_ID,
+        base_url: str = HA_API_BASE_URL,
     ) -> None:
         self._auth = auth
         self._session = session or aiohttp.ClientSession()
         # Only close a session we created; HA's shared session is managed by HA.
         self._owns_session = session is None
         self._base_url = base_url.rstrip("/")
-        self._corp_id = corp_id
-        # thirdPartyUserId from AcceptGrant; attached to subsequent headers.
+        # thirdPartyUserId from AcceptGrant; used as the HA unique_id only.
         self._third_party_user_id: str | None = None
 
     @property
@@ -126,55 +116,59 @@ class FotileClient:
     def set_third_party_user_id(self, value: str | None) -> None:
         self._third_party_user_id = value
 
-    # ---- envelope & unified request ----
+    # ---- unified request ----
 
-    def _build_header(self, namespace: str) -> dict[str, Any]:
-        header: dict[str, Any] = {
-            "namespace": namespace,
-            "thirdPartyId": self._corp_id,
-            # granteeId == thirdPartyId (spec 2.1.4.1).
-            "granteeId": self._corp_id,
-            "messageId": str(uuid.uuid4()),
-            "timestamp": int(time.time() * 1000),
-        }
-        if self._third_party_user_id:
-            header["thirdPartyUserId"] = self._third_party_user_id
-        return header
+    @staticmethod
+    def _parse_error(text: str) -> tuple[int | None, str]:
+        """Best-effort parse of code/description from an error body."""
+        try:
+            body = json.loads(text)
+        except (TypeError, ValueError):
+            return None, ""
+        if not isinstance(body, dict):
+            return None, ""
+        code = body.get(RESPONSE_KEY_CODE)
+        description = body.get(KEY_DESCRIPTION) or ""
+        return (code if isinstance(code, int) else None), str(description)
 
-    async def _call(
+    async def _call_proxy(
         self,
-        namespace: str,
+        path: str,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Send one request and return the verified payload."""
-        url = f"{self._base_url}{API_PATH}"
-        body = {
-            "header": self._build_header(namespace),
-            "payload": payload if payload is not None else {},
-        }
+        """POST to the facade and return the flat response body."""
+        url = f"{self._base_url}{path}"
 
         try:
             response = await self._auth.async_request(
                 self._session,
                 "POST",
                 url,
-                json=body,
+                json=payload if payload is not None else {},
                 headers={"Content-Type": "application/json"},
             )
 
-            # HTTP 401 double-check (servers may always return 200).
-            if response.status == 401:
+            if response.status in (401, 403):
                 text = await response.text()
-                raise FotileAuthError(401, f"Unauthorized: {text[:200]}")
+                raise FotileAuthError(
+                    response.status, f"Unauthorized: {text[:200]}"
+                )
 
             if response.status >= 400:
                 text = await response.text()
-                raise FotileApiError(response.status, text[:500])
+                code, description = self._parse_error(text)
+                _LOGGER.warning(
+                    "Facade %s failed status=%s code=%s description=%s",
+                    path,
+                    response.status,
+                    code,
+                    description,
+                )
+                raise FotileBusinessError(code, description or text[:500])
 
             # Skip aiohttp's Content-Type check: the server may return
-            # non-JSON content types with valid JSON bodies. Let parse_envelope
-            # decide, so a wrong content type becomes a visible API error
-            # instead of a silent "connection error" retry loop.
+            # non-JSON content types with valid JSON bodies, and a wrong type
+            # must surface as an API error, not a silent retry loop.
             raw = await response.json(content_type=None)
 
         except aiohttp.ClientError as err:
@@ -184,36 +178,17 @@ class FotileClient:
                 raise
             raise FotileConnectionError(0, f"Connection error: {err}") from err
 
-        try:
-            _header, resp_payload = parse_envelope(raw)
-        except FotileProtocolError as err:
-            raise FotileApiError(response.status, str(err)) from err
-
-        code = payload_code(resp_payload)
-        if not is_success(resp_payload):
-            description = error_description(resp_payload)
-            _LOGGER.warning(
-                "Fotile API %s business error code=%s description=%s",
-                namespace,
-                code,
-                description,
+        if not isinstance(raw, dict):
+            raise FotileApiError(
+                200, f"Response is not a JSON object: {type(raw).__name__}"
             )
-            if is_auth_error_code(code):
-                raise FotileAuthError(
-                    401,
-                    f"Fotile credentials invalid code={code}: {description}",
-                    code=code,
-                )
-            raise FotileBusinessError(code, description)
+        return raw
 
-        return resp_payload
-
-    # ---- AcceptGrant (spec 2.3.3) ----
+    # ---- AcceptGrant ----
 
     async def accept_grant(self) -> str | None:
-        """Establish the account grant; required by every other namespace."""
-        payload = {"grant": {"type": GRANT_TYPE_OAUTH2_AUTH_CODE}}
-        resp = await self._call(NS_ACCEPT_GRANT, payload)
+        """Establish the account grant; required before every other endpoint."""
+        resp = await self._call_proxy("/accept-grant")
 
         user_id = resp.get("thirdPartyUserId")
         if user_id is not None:
@@ -221,20 +196,21 @@ class FotileClient:
         self._third_party_user_id = user_id
 
         if user_id is None:
-            _LOGGER.warning(
-                "AcceptGrant response missing thirdPartyUserId; "
-                "subsequent requests will omit it"
-            )
+            _LOGGER.warning("AcceptGrant response missing thirdPartyUserId")
         else:
             _LOGGER.info("AcceptGrant succeeded, thirdPartyUserId = %s", user_id)
 
         return user_id
 
-    # ---- DeviceDiscovery (spec 2.3.4) ----
+    # ---- devices ----
 
     async def get_devices(self) -> list[dict[str, Any]]:
-        """List all bound devices. No online status or firmware version."""
-        resp = await self._call(NS_DEVICE_DISCOVERY, {})
+        """List all bound devices.
+
+        The device list carries no online status; ``online`` is backfilled by
+        :meth:`get_device_status`. Pagination is aggregated by the facade.
+        """
+        resp = await self._call_proxy("/devices")
 
         devices: list[dict[str, Any]] = []
         for raw in resp.get(KEY_DEVICES) or []:
@@ -261,15 +237,14 @@ class FotileClient:
 
         return devices
 
-    # ---- DeviceSnapshot (spec 2.3.6) ----
+    # ---- device status ----
 
     async def get_device_status(self, device_id: str) -> dict[str, Any]:
-        """Snapshot for one device (spec requires a single id).
+        """Snapshot for one device.
 
         Returns mapped internal fields plus online, _flat, _fetched_at.
         """
-        payload = {KEY_THIRD_PARTY_DEV_IDS: [device_id]}
-        resp = await self._call(NS_DEVICE_SNAPSHOT, payload)
+        resp = await self._call_proxy(f"/devices/{device_id}/snapshot")
 
         target = find_snapshot_device(resp, device_id)
         if target is None:
@@ -284,7 +259,19 @@ class FotileClient:
         status["_fetched_at"] = time.time()
         return status
 
-    # ---- DeviceCommand (spec 2.3.7) ----
+    # ---- device subscription ----
+
+    async def subscribe_device(self, device_id: str) -> dict[str, Any]:
+        """Subscribe to a device.
+
+        Subscriptions only affect event push. HA runs locally with no public
+        callback, so this integration polls (``iot_class: cloud_polling``) and
+        subscribing is not required. Kept to verify whether the snapshot
+        endpoint demands a subscription first.
+        """
+        return await self._call_proxy(f"/devices/{device_id}/subscribe")
+
+    # ---- device command ----
 
     async def send_command(
         self,
@@ -293,17 +280,15 @@ class FotileClient:
         data: dict[str, Any],
         prod_id: str | None = None,
     ) -> dict[str, Any]:
-        """Write a property. Timestamp uses yyyyMMddTHHmmssZ (no millis)."""
-        command: dict[str, Any] = {
-            "timestamp": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
-            "thirdPartyDevId": device_id,
+        """Write a property: request body is ``sid`` + ``data``."""
+        body: dict[str, Any] = {
             KEY_SERVICE_ID: sid,
             KEY_DATA: data,
         }
         if prod_id:
-            command["prodId"] = prod_id
+            body["prodId"] = prod_id
 
-        return await self._call(NS_DEVICE_COMMAND, {KEY_COMMAND: command})
+        return await self._call_proxy(f"/devices/{device_id}/command", body)
 
     # ---- online check ----
 

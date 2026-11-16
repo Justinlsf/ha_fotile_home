@@ -1,16 +1,14 @@
 {
   "domain": "fotile",
   "name": "Fotile 方太",
-  "version": "0.1.0",
+  "codeowners": ["@fotilefiks"],
   "config_flow": true,
+  "dependencies": ["application_credentials"],
+  "documentation": "https://github.com/fotilefiks/ha_fotile_home",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "codeowners": ["@fotilefiks"],
-  "documentation": "https://github.com/fotilefiks/ha_fotile_home",
   "issue_tracker": "https://github.com/fotilefiks/ha_fotile_home/issues",
+  "loggers": ["custom_components.fotile"],
   "requirements": [],
-  "dependencies": ["application_credentials"],
-  "loggers": [
-    "custom_components.fotile"
-  ]
+  "version": "0.1.0"
 }

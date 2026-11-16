@@ -12,46 +12,34 @@ except ImportError:  # pragma: no cover
 DOMAIN: Final = "fotile"
 MANUFACTURER: Final = "Fotile"
 
-OAUTH_REDIRECT_URI: Final = "https://my.home-assistant.io/redirect/oauth"
-OAUTH_AUTHORIZE_URL: Final = "https://api-test.fotile.com/api/v1/smsOauthHa/index.html"
-OAUTH_TOKEN_URL: Final = "https://api-test.fotile.com/api/oauth/token"
+# ---- OAuth 2.0 (Authorization Code + PKCE) ----
+OAUTH_AUTHORIZE_URL: Final = "https://api.fotile.com/api/v1/smsOauthHa/index.html"
+OAUTH_TOKEN_URL: Final = "https://api.fotile.com/api/oauth/token"
 
 # Public client id; PKCE makes it safe to ship (no client_secret).
 OAUTH_CLIENT_ID: Final = "eHyS5pIN8G"
 OAUTH_SCOPES: Final[list[str]] = []
 PKCE_CODE_VERIFIER_LENGTH: Final = 128
 
-API_BASE_URL: Final = "https://api-test.fotile.com/open-cloud"
-API_PATH: Final = "/v1/api"
+# ---- HA facade (iot-b2b-delegators /ha/v1) ----
+# Flat REST only. CorpId, the cloud-cloud envelope (header / namespace) and the
+# enterprise-side protocol stay on the server; the client carries no vendor id.
+# All endpoints are POST with "Authorization: Bearer <access_token>":
+#   /accept-grant
+#   /devices
+#   /devices/{deviceId}/snapshot
+#   /devices/{deviceId}/command
+#   /devices/{deviceId}/subscribe
+HA_API_BASE_URL: Final = "https://api.fotile.com/open-cloud/ha/v1"
 
-# CorpId issued by Fotile; used for both thirdPartyId and granteeId.
-CORP_ID: Final = "db5ad5848cb3805bd5f7bf678ea4a681"
-
-NS_ACCEPT_GRANT: Final = "AcceptGrant"
-NS_DEVICE_DISCOVERY: Final = "DeviceDiscovery"
-NS_DEVICE_SNAPSHOT: Final = "DeviceSnapshot"
-NS_DEVICE_COMMAND: Final = "DeviceCommand"
-
-GRANT_TYPE_OAUTH2_AUTH_CODE: Final = "OAuth2.AuthorizationCode"
-
-# Business errors live in payload.code; HTTP status may stay 200.
-CODE_SUCCESS: Final = 0
-AUTH_ERROR_CODES: Final[frozenset[int]] = frozenset(
-    {10002, 100021, 100022, 10003, 10004, 10008}
-)
-MISSING_AUTH_CODES: Final[frozenset[int]] = frozenset({10000, 100001})
-CODE_DEVICE_NOT_EXIST: Final = 10009
-CODE_COMMAND_NOT_SUPPORT: Final = 10010
+# Only the business codes the client branches on: the facade maps credential
+# errors to HTTP 401 and everything else to HTTP 4xx.
 CODE_DEVICE_OFFLINE: Final = 10011
 
-DEVICE_STATUS_ONLINE: Final = "online"
-
-RESPONSE_KEY_HEADER: Final = "header"
-RESPONSE_KEY_PAYLOAD: Final = "payload"
+# Flat response: code / description plus business fields on the same level.
 RESPONSE_KEY_CODE: Final = "code"
 KEY_DESCRIPTION: Final = "description"
 KEY_DEVICES: Final = "devices"
-KEY_THIRD_PARTY_DEV_IDS: Final = "thirdPartyDevIds"
 
 # Device: id/name at top level, details inside devInfo.
 FIELD_MAP_DEVICE_TOP: Final[dict[str, str]] = {
@@ -72,15 +60,6 @@ KEY_SERVICE_TYPE: Final = "st"
 KEY_STATUS: Final = "status"
 KEY_DATA: Final = "data"
 KEY_TIMESTAMP: Final = "ts"
-KEY_COMMAND: Final = "command"
-
-# Category is decided by services[].sid; the spec has no devType table.
-DEVICE_KIND_RANGE_HOOD: Final = "range_hood"
-DEVICE_KIND_STOVE: Final = "stove"
-DEVICE_KIND_BY_SID: Final[dict[str, frozenset[str]]] = {
-    DEVICE_KIND_RANGE_HOOD: frozenset({"PowerSwitch", "FanLevel", "Light"}),
-    DEVICE_KIND_STOVE: frozenset({"LeftStoveState", "RightStoveState"}),
-}
 
 # Flattened status keys are "{sid}.{attr}".
 STATUS_FIELD_MAP: Final[dict[str, tuple[str, str]]] = {
@@ -98,6 +77,14 @@ SID_LIGHT: Final = "Light"
 SID_LEFT_STOVE: Final = "LeftStoveState"
 SID_RIGHT_STOVE: Final = "RightStoveState"
 
+# Category is decided by services[].sid; the spec has no devType table.
+DEVICE_KIND_RANGE_HOOD: Final = "range_hood"
+DEVICE_KIND_STOVE: Final = "stove"
+DEVICE_KIND_BY_SID: Final[dict[str, frozenset[str]]] = {
+    DEVICE_KIND_RANGE_HOOD: frozenset({SID_POWER_SWITCH, SID_FAN_LEVEL, SID_LIGHT}),
+    DEVICE_KIND_STOVE: frozenset({SID_LEFT_STOVE, SID_RIGHT_STOVE}),
+}
+
 # FanLevel: 0-standby, 1-low, 2-auto, 3-high.
 FAN_LEVEL_STANDBY: Final = 0
 FAN_LEVEL_LOW: Final = 1
@@ -114,7 +101,6 @@ DEVICE_LIST_CACHE_TTL: Final = 300
 STATUS_STALE_THRESHOLD: Final = 120
 
 CONF_SCAN_INTERVAL: Final = "scan_interval"
-CONF_DEVICES_FILTER: Final = "devices_filter"
 CONF_THIRD_PARTY_USER_ID: Final = "third_party_user_id"
 
 if Platform is None:  # pragma: no cover
