@@ -34,6 +34,8 @@ HA_API_BASE_URL: Final = "https://api.fotile.com/open-cloud/ha/v1"
 
 # Only the business codes the client branches on: the facade maps credential
 # errors to HTTP 401 and everything else to HTTP 4xx.
+CODE_DEVICE_NOT_EXIST: Final = 10009
+CODE_COMMAND_NOT_SUPPORT: Final = 10010
 CODE_DEVICE_OFFLINE: Final = 10011
 
 # Flat response: code / description plus business fields on the same level.
@@ -101,6 +103,7 @@ DEVICE_LIST_CACHE_TTL: Final = 300
 STATUS_STALE_THRESHOLD: Final = 120
 
 CONF_SCAN_INTERVAL: Final = "scan_interval"
+CONF_DEVICES_FILTER: Final = "devices_filter"
 CONF_THIRD_PARTY_USER_ID: Final = "third_party_user_id"
 
 if Platform is None:  # pragma: no cover
