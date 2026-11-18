@@ -11,6 +11,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     DEVICE_KIND_RANGE_HOOD,
+    FAN_LEVEL_AUTO,
     FAN_LEVEL_HIGH,
     FAN_LEVEL_LOW,
     FAN_LEVEL_STANDBY,
